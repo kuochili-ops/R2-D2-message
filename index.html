@@ -30,7 +30,6 @@
       z-index: 1;
     }
 
-    /* 左上角標頭 */
     .app-header {
       position: absolute;
       top: 16px;
@@ -72,7 +71,6 @@
       100% { opacity: 1; }
     }
 
-    /* 置底 UI 層 */
     .ui-layer {
       position: absolute;
       bottom: 8px;
@@ -189,7 +187,7 @@
 
     textarea {
       width: 100%;
-      height: 70px;
+      height: 60px;
       background: rgba(2, 6, 23, 0.9);
       border: 1px solid rgba(56, 189, 248, 0.3);
       border-radius: 8px;
@@ -198,6 +196,38 @@
       font-size: 0.82rem;
       outline: none;
       resize: none;
+    }
+
+    .photo-upload-bar {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      background: rgba(2, 132, 199, 0.15);
+      border: 1px dashed rgba(56, 189, 248, 0.5);
+      padding: 8px 10px;
+      border-radius: 8px;
+    }
+
+    .photo-upload-btns-row {
+      display: flex;
+      gap: 6px;
+      justify-content: flex-end;
+    }
+
+    .photo-upload-btn {
+      background: rgba(56, 189, 248, 0.25);
+      color: #38bdf8;
+      border: 1px solid #38bdf8;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 0.72rem;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    .photo-upload-btn:hover {
+      background: #38bdf8;
+      color: #030712;
     }
 
     .color-picker-group {
@@ -313,6 +343,16 @@
       <textarea id="message-input" placeholder="輸入要全息廣播的訊息 (分行可自動輪播)...">Help me, Obi-Wan Kenobi.
 You're my only hope.</textarea>
 
+      <div class="photo-upload-bar">
+        <span id="photo-status-text" style="font-size:0.75rem; color:#94a3b8;">接續照片：未選擇 (可直接 Ctrl+V 貼上照片)</span>
+        <div class="photo-upload-btns-row">
+          <button class="photo-upload-btn" onclick="pasteImageFromClipboard()">📋 貼上剪貼簿照片</button>
+          <button class="photo-upload-btn" onclick="document.getElementById('photo-file-input').click()">📷 檔案上傳</button>
+          <button id="clear-photo-btn" class="photo-upload-btn" style="display:none; border-color:#ef4444; color:#ef4444;" onclick="clearUploadedPhoto()">❌ 清除</button>
+        </div>
+        <input type="file" id="photo-file-input" accept="image/*" style="display:none;">
+      </div>
+
       <div class="color-picker-group">
         <span style="font-size:0.78rem; color:#94a3b8;">光錐色彩：</span>
         <div class="color-dot active" style="background:#38bdf8; color:#38bdf8;" onclick="changeHoloColor(0x38bdf8, this)"></div>
@@ -351,12 +391,15 @@ You're my only hope.</textarea>
     let thirdLegNode = null;
     let initialHeadRotation = new THREE.Euler();
 
-    let holoBeamGroup, holoTriangleMesh, holoTextPlane;
+    let holoBeamGroup, holoTriangleGroup, holoTextPlane;
     let currentBeamColor = 0x38bdf8;
 
     let textLines = [];
     let currentLineIndex = 0;
     let lastSwitchTime = 0;
+    let isShowingPhoto = false; 
+    let uploadedPhotoTexture = null;
+    let uploadedPhotoAspect = 1.0;
 
     let currentTextWidth3D = 3.0;
     let currentTextHeight3D = 0.8;
@@ -370,7 +413,6 @@ You're my only hope.</textarea>
     let mediaRecorder = null;
     let recordedChunks = [];
     let isRecording = false;
-    let recordLoopsRemaining = 0;
 
     let targetBodyTiltX = 0;
     let targetBodyTiltZ = 0;
@@ -390,8 +432,6 @@ You're my only hope.</textarea>
       scene.background = new THREE.Color(0x030712);
 
       camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
-      
-      // 🎯 推進鏡頭至 3.8 單位，讓機器人更加靠近螢幕
       camera.position.set(0, 0.95, 3.8);
 
       renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
@@ -438,48 +478,84 @@ You're my only hope.</textarea>
       updateHologramTexture();
     }
 
+    // 🎯 精確計算 3D 頂點與上下三角形邊緣貼合
     function updateHologramGeometry() {
       if (!holoBeamGroup) return;
 
       const length = SAVED_PARAMS.length;
-      const planeWidth = currentTextWidth3D; 
-      const planeHeight = currentTextHeight3D;
+      const halfW = currentTextWidth3D / 2;
+      const halfH = currentTextHeight3D / 2;
 
-      if (holoTriangleMesh) holoBeamGroup.remove(holoTriangleMesh);
+      if (holoTriangleGroup) holoBeamGroup.remove(holoTriangleGroup);
+      holoTriangleGroup = new THREE.Group();
 
-      const shape = new THREE.Shape();
-      shape.moveTo(0, 0); 
-      shape.lineTo(-planeWidth / 2, length); 
-      shape.lineTo(planeWidth / 2, length);  
-      shape.closePath();
+      const createCustomTriangleMesh = (p1, p2, p3, opacityVal) => {
+        const geometry = new THREE.BufferGeometry();
+        const vertices = new Float32Array([
+          p1.x, p1.y, p1.z,
+          p2.x, p2.y, p2.z,
+          p3.x, p3.y, p3.z
+        ]);
+        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        geometry.computeVertexNormals();
 
-      const shapeGeo = new THREE.ShapeGeometry(shape);
-      shapeGeo.rotateX(Math.PI / 2);
+        const material = new THREE.MeshBasicMaterial({
+          color: currentBeamColor,
+          transparent: true,
+          opacity: opacityVal,
+          side: THREE.DoubleSide
+        });
+        return new THREE.Mesh(geometry, material);
+      };
 
-      const shapeMat = new THREE.MeshBasicMaterial({
-        color: currentBeamColor,
-        transparent: true,
-        opacity: 0.38,
-        side: THREE.DoubleSide
-      });
-      holoTriangleMesh = new THREE.Mesh(shapeGeo, shapeMat);
-      holoBeamGroup.add(holoTriangleMesh);
+      const origin = new THREE.Vector3(0, 0, 0); // 發射孔原點
+
+      // 照片四個角在投影平面上的座標 (z = length)
+      const topLeft = new THREE.Vector3(-halfW, halfH, length);
+      const topRight = new THREE.Vector3(halfW, halfH, length);
+      const bottomLeft = new THREE.Vector3(-halfH, -halfH, length); // 預防防呆
+      const botLeftReal = new THREE.Vector3(-halfW, -halfH, length);
+      const botRightReal = new THREE.Vector3(halfW, -halfH, length);
+
+      // 1. 中間主光錐 (雙向組合)
+      const centerBeamShape = new THREE.Shape();
+      centerBeamShape.moveTo(0, 0);
+      centerBeamShape.lineTo(-halfW, length);
+      centerBeamShape.lineTo(halfW, length);
+      centerBeamShape.closePath();
+      const centerGeo = new THREE.ShapeGeometry(centerBeamShape);
+      centerGeo.rotateX(Math.PI / 2);
+      const centerMat = new THREE.MeshBasicMaterial({ color: currentBeamColor, transparent: true, opacity: 0.35, side: THREE.DoubleSide });
+      const centerMesh = new THREE.Mesh(centerGeo, centerMat);
+      holoTriangleGroup.add(centerMesh);
+
+      // 2. 上方三角形：尖端在 (0,0,0)，底邊精確連至照片上緣 (-halfW, halfH, length) 到 (halfW, halfH, length)
+      const topTri = createCustomTriangleMesh(origin, topLeft, topRight, 0.25);
+      holoTriangleGroup.add(topTri);
+
+      // 3. 下方三角形：尖端在 (0,0,0)，底邊精確連至照片下緣 (-halfW, -halfH, length) 到 (halfW, -halfH, length)
+      const botTri = createCustomTriangleMesh(origin, botLeftReal, botRightReal, 0.25);
+      holoTriangleGroup.add(botTri);
+
+      holoBeamGroup.add(holoTriangleGroup);
 
       if (!holoTextPlane) {
-        const planeGeo = new THREE.PlaneGeometry(planeWidth, planeHeight);
+        const planeGeo = new THREE.PlaneGeometry(currentTextWidth3D, currentTextHeight3D);
         const planeMat = new THREE.MeshBasicMaterial({
           transparent: true,
-          opacity: 0.95,
+          opacity: isShowingPhoto ? 0.55 : 0.95,
           side: THREE.DoubleSide,
-          blending: THREE.AdditiveBlending
+          blending: isShowingPhoto ? THREE.NormalBlending : THREE.AdditiveBlending
         });
         holoTextPlane = new THREE.Mesh(planeGeo, planeMat);
         holoTextPlane.position.set(0, 0, length);
         holoBeamGroup.add(holoTextPlane);
       } else {
         holoTextPlane.geometry.dispose();
-        holoTextPlane.geometry = new THREE.PlaneGeometry(planeWidth, planeHeight);
+        holoTextPlane.geometry = new THREE.PlaneGeometry(currentTextWidth3D, currentTextHeight3D);
         holoTextPlane.position.set(0, 0, length);
+        holoTextPlane.material.opacity = isShowingPhoto ? 0.55 : 0.95;
+        holoTextPlane.material.blending = isShowingPhoto ? THREE.NormalBlending : THREE.AdditiveBlending;
       }
     }
 
@@ -581,27 +657,117 @@ You're my only hope.</textarea>
       setupHologramInsideHead(r2d2HeadNode);
     }
 
+    function compressImageAndLoad(dataUrl, nameInfo) {
+      const img = new Image();
+      img.onload = () => {
+        const maxDimension = 1280;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > maxDimension || height > maxDimension) {
+          if (width > height) {
+            height = Math.round((height * maxDimension) / width);
+            width = maxDimension;
+          } else {
+            width = Math.round((width * maxDimension) / height);
+            height = maxDimension;
+          }
+        }
+
+        const cvs = document.createElement('canvas');
+        cvs.width = width;
+        cvs.height = height;
+        const ctx = cvs.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        const compressedDataUrl = cvs.toDataURL('image/jpeg', 0.88);
+
+        new THREE.TextureLoader().load(compressedDataUrl, (texture) => {
+          uploadedPhotoTexture = texture;
+          uploadedPhotoAspect = width / height;
+
+          document.getElementById('photo-status-text').innerText = `已載入照片 (${nameInfo})`;
+          document.getElementById('photo-status-text').style.color = '#38bdf8';
+          document.getElementById('clear-photo-btn').style.display = 'inline-block';
+
+          showToast("已載入並優化照片解析度！");
+        });
+      };
+      img.src = dataUrl;
+    }
+
+    window.pasteImageFromClipboard = async () => {
+      try {
+        const clipboardItems = await navigator.clipboard.read();
+        for (const item of clipboardItems) {
+          const imageType = item.types.find(type => type.startsWith('image/'));
+          if (imageType) {
+            const blob = await item.getType(imageType);
+            const reader = new FileReader();
+            reader.onload = (e) => compressImageAndLoad(e.target.result, "剪貼簿圖片");
+            reader.readAsDataURL(blob);
+            return;
+          }
+        }
+        showToast("剪貼簿中沒有找到圖片！");
+      } catch (err) {
+        showToast("請直接按 Ctrl+V (或 Cmd+V) 貼上照片");
+      }
+    };
+
     function bindEvents() {
       const settingsCard = document.getElementById('settings-card');
       const settingsBtn = document.getElementById('settings-toggle-btn');
       const msgInput = document.getElementById('message-input');
+      const photoFileInput = document.getElementById('photo-file-input');
+
+      window.addEventListener('paste', (e) => {
+        const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+        for (let item of items) {
+          if (item.type.indexOf('image') !== -1) {
+            const blob = item.getAsFile();
+            const reader = new FileReader();
+            reader.onload = (event) => compressImageAndLoad(event.target.result, "Ctrl+V 貼上");
+            reader.readAsDataURL(blob);
+            break;
+          }
+        }
+      });
 
       msgInput.addEventListener('input', () => {
         parseInputLines();
-        updateHologramTexture();
+        if (!isShowingPhoto) updateHologramTexture();
       });
+
+      photoFileInput.addEventListener('change', (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => compressImageAndLoad(event.target.result, file.name.substring(0, 8) + "...");
+        reader.readAsDataURL(file);
+      });
+
+      window.clearUploadedPhoto = () => {
+        uploadedPhotoTexture = null;
+        document.getElementById('photo-status-text').innerText = '接續照片：未選擇 (可直接 Ctrl+V 貼上照片)';
+        document.getElementById('photo-status-text').style.color = '#94a3b8';
+        document.getElementById('clear-photo-btn').style.display = 'none';
+        document.getElementById('photo-file-input').value = '';
+        isShowingPhoto = false;
+        updateHologramTexture();
+        showToast("已移除接續照片");
+      };
 
       settingsBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         settingsCard.classList.toggle('collapsed');
       });
 
-      // 🎯 點擊設定面板內部不會引發收合
       settingsCard.addEventListener('click', (e) => {
         e.stopPropagation();
       });
 
-      // 🎯 點擊/觸碰界面外任何區域時自動收合設定界面
       const closeSettingsOnOutside = (e) => {
         if (!settingsCard.classList.contains('collapsed')) {
           if (!settingsCard.contains(e.target) && !settingsBtn.contains(e.target)) {
@@ -620,6 +786,7 @@ You're my only hope.</textarea>
         if (text) {
           msgInput.value = text;
           parseInputLines();
+          isShowingPhoto = false;
           updateHologramTexture();
         }
         startRandomEntrance();
@@ -632,7 +799,11 @@ You're my only hope.</textarea>
         document.querySelectorAll('.color-dot').forEach(d => d.classList.remove('active'));
         el.classList.add('active');
         updateHologramGeometry();
-        updateHologramTexture();
+        if (isShowingPhoto && uploadedPhotoTexture) {
+          applyPhotoHologramTexture();
+        } else {
+          updateHologramTexture();
+        }
       };
 
       parseInputLines();
@@ -644,6 +815,20 @@ You're my only hope.</textarea>
       if (textLines.length === 0) textLines = ["全息廣播系統"];
       currentLineIndex = 0;
       lastSwitchTime = clock ? clock.getElapsedTime() : 0;
+    }
+
+    function applyPhotoHologramTexture() {
+      if (!uploadedPhotoTexture) return;
+
+      currentTextHeight3D = 10.0; 
+      currentTextWidth3D = currentTextHeight3D * uploadedPhotoAspect;
+
+      updateHologramGeometry();
+
+      if (holoTextPlane) {
+        holoTextPlane.material.map = uploadedPhotoTexture;
+        holoTextPlane.material.needsUpdate = true;
+      }
     }
 
     function updateHologramTexture() {
@@ -750,13 +935,12 @@ You're my only hope.</textarea>
       isRecording = true;
       recBtn.classList.add('recording');
       recBtn.innerText = "⏺ 錄製中...";
-      showToast("開始錄製完整全息廣播流程...");
+      showToast("開始錄製完整文字與巨幅照片廣播...");
 
       parseInputLines();
+      isShowingPhoto = false;
       updateHologramTexture();
       startRandomEntrance();
-
-      recordLoopsRemaining = textLines.length;
     }
 
     function showToast(msg) {
@@ -777,18 +961,35 @@ You're my only hope.</textarea>
 
       const elapsedTime = clock.getElapsedTime();
 
-      if (textLines.length > 0) {
+      if (!isEntering) {
         const timeDiff = elapsedTime - lastSwitchTime;
         if (timeDiff > 3.0) {
-          if (isRecording && !isEntering) {
-            recordLoopsRemaining--;
-            if (recordLoopsRemaining <= 0) {
+          lastSwitchTime = elapsedTime;
+
+          if (!isShowingPhoto) {
+            if (currentLineIndex < textLines.length - 1) {
+              currentLineIndex++;
+              updateHologramTexture();
+            } else if (uploadedPhotoTexture) {
+              isShowingPhoto = true;
+              applyPhotoHologramTexture();
+              showToast("切換至巨幅照片全息投影");
+            } else {
+              currentLineIndex = 0;
+              updateHologramTexture();
+
+              if (isRecording) {
+                mediaRecorder.stop();
+              }
+            }
+          } else {
+            if (isRecording) {
               mediaRecorder.stop();
             }
+            isShowingPhoto = false;
+            currentLineIndex = 0;
+            updateHologramTexture();
           }
-          currentLineIndex = (currentLineIndex + 1) % textLines.length;
-          lastSwitchTime = elapsedTime;
-          updateHologramTexture();
         }
       }
 
@@ -849,8 +1050,10 @@ You're my only hope.</textarea>
         r2d2HeadNode.rotation.z = THREE.MathUtils.lerp(r2d2HeadNode.rotation.z, baseZ + targetHeadAngleZ, 0.04);
       }
 
-      if (holoTriangleMesh) {
-        holoTriangleMesh.material.opacity = 0.35 + Math.sin(elapsedTime * 6) * 0.05;
+      if (holoTriangleGroup) {
+        holoTriangleGroup.children.forEach((mesh, idx) => {
+          mesh.material.opacity = (0.2 + idx * 0.08) + Math.sin(elapsedTime * 6 + idx) * 0.05;
+        });
       }
 
       controls.update();

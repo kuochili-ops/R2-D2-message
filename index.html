@@ -478,7 +478,6 @@ You're my only hope.</textarea>
       updateHologramTexture();
     }
 
-    // 🎯 精確計算 3D 頂點與上下三角形邊緣貼合
     function updateHologramGeometry() {
       if (!holoBeamGroup) return;
 
@@ -508,16 +507,12 @@ You're my only hope.</textarea>
         return new THREE.Mesh(geometry, material);
       };
 
-      const origin = new THREE.Vector3(0, 0, 0); // 發射孔原點
-
-      // 照片四個角在投影平面上的座標 (z = length)
+      const origin = new THREE.Vector3(0, 0, 0); 
       const topLeft = new THREE.Vector3(-halfW, halfH, length);
       const topRight = new THREE.Vector3(halfW, halfH, length);
-      const bottomLeft = new THREE.Vector3(-halfH, -halfH, length); // 預防防呆
       const botLeftReal = new THREE.Vector3(-halfW, -halfH, length);
       const botRightReal = new THREE.Vector3(halfW, -halfH, length);
 
-      // 1. 中間主光錐 (雙向組合)
       const centerBeamShape = new THREE.Shape();
       centerBeamShape.moveTo(0, 0);
       centerBeamShape.lineTo(-halfW, length);
@@ -529,11 +524,9 @@ You're my only hope.</textarea>
       const centerMesh = new THREE.Mesh(centerGeo, centerMat);
       holoTriangleGroup.add(centerMesh);
 
-      // 2. 上方三角形：尖端在 (0,0,0)，底邊精確連至照片上緣 (-halfW, halfH, length) 到 (halfW, halfH, length)
       const topTri = createCustomTriangleMesh(origin, topLeft, topRight, 0.25);
       holoTriangleGroup.add(topTri);
 
-      // 3. 下方三角形：尖端在 (0,0,0)，底邊精確連至照片下緣 (-halfW, -halfH, length) 到 (halfW, -halfH, length)
       const botTri = createCustomTriangleMesh(origin, botLeftReal, botRightReal, 0.25);
       holoTriangleGroup.add(botTri);
 
@@ -963,7 +956,10 @@ You're my only hope.</textarea>
 
       if (!isEntering) {
         const timeDiff = elapsedTime - lastSwitchTime;
-        if (timeDiff > 3.0) {
+        // 🎯 文字顯示 4 秒，照片顯示 6 秒
+        const currentDuration = isShowingPhoto ? 6.0 : 4.0;
+
+        if (timeDiff > currentDuration) {
           lastSwitchTime = elapsedTime;
 
           if (!isShowingPhoto) {
